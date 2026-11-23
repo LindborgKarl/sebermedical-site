@@ -1524,7 +1524,7 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
       busy=true;if(btn)btn.disabled=true;
       try{
         await submit(formId,collect.values(formEl));
-        done=true;msgEl.textContent=thanks;msgEl.hidden=false;
+        done=true;msgEl.textContent=thanks;msgEl.hidden=false;document.dispatchEvent(new CustomEvent('sm:skickat',{detail:formEl.id}));
       }catch(err){
         msgEl.textContent=FAIL;msgEl.hidden=false;if(btn)btn.disabled=false;
       }finally{busy=false}
@@ -1563,4 +1563,114 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.addEventListener('click',(
 })();
 </script>
 
+<script>
+(()=>{
+  // Besöksstatistik utan cookies: inget sparas i besökarens webbläsare, ingen IP-adress sparas.
+  // Varje sidvisning skickar en rad till Wix-samlingen "Besok" (typ "besok") och sedan
+  // ögonblicksbilder av samma besök (typ "slut") med aktiv tid, scroll, avsnitt och klick.
+  try{
+    if(!/(^|\.)sebermedical\.com$/.test(location.hostname))return;
+    if(navigator.webdriver)return;
+    const nav=performance.getEntriesByType&&performance.getEntriesByType('navigation')[0];
+    if(nav&&nav.type==='reload')return;
+  }catch(e){return}
+  const API='https://www.wixapis.com', CLIENT='238f6816-323a-4ed1-b857-4bb2e7ca8e33', COL='Besok';
+  const cut=(s,n)=>String(s||'').slice(0,n||200);
+  const id=(crypto.randomUUID?crypto.randomUUID():String(Date.now())+Math.random().toString(16).slice(2));
+  const qs=new URLSearchParams(location.search);
+  const ua=navigator.userAgent||'';
+
+  // Hänvisning: webbläsarens referrer, eller ref= som omdirigeringssidorna skickar vidare.
+  let refHost='', refPath='';
+  try{
+    const raw=qs.get('ref')?'https://'+qs.get('ref'):document.referrer;
+    if(raw){const u=new URL(raw);const h=u.hostname.replace(/^www\./,'');
+      if(!/(^|\.)sebermedical\.com$/.test(h)){refHost=h;refPath=cut(u.pathname,200)}}
+  }catch(e){}
+  const has=(h,list)=>list.some(d=>h===d||h.endsWith('.'+d));
+  const NEWS=['dn.se','svd.se','gp.se','aftonbladet.se','expressen.se','di.se','sydsvenskan.se','hd.se','svt.se','sverigesradio.se','omni.se','dagensmedicin.se','lakartidningen.se','vardfokus.se','dagenssamhalle.se','breakit.se','mynewsdesk.com','via.tt.se'];
+  const NAMES={'dn.se':'DN','svd.se':'SvD','gp.se':'GP','google':'Google','bing.com':'Bing','duckduckgo.com':'DuckDuckGo','linkedin.com':'LinkedIn','lnkd.in':'LinkedIn','facebook.com':'Facebook','instagram.com':'Instagram','t.co':'X','x.com':'X','twitter.com':'X','youtube.com':'YouTube','chatgpt.com':'ChatGPT','chat.openai.com':'ChatGPT','perplexity.ai':'Perplexity','claude.ai':'Claude','gemini.google.com':'Gemini','copilot.microsoft.com':'Copilot'};
+  function classify(){
+    const s=(qs.get('utm_source')||'').toLowerCase();
+    if(s)return {kalla:s==='dn'?'DN':s, kanal:(qs.get('utm_medium')||'kampanj').toLowerCase()};
+    if(!refHost)return {kalla:'direkt',kanal:'direkt'};
+    let name=refHost;
+    for(const d in NAMES){if(d==='google'?/(^|\.)google\.[a-z.]+$/.test(refHost):has(refHost,[d])){name=NAMES[d];break}}
+    let kanal='hänvisning';
+    if(has(refHost,['gemini.google.com','chatgpt.com','chat.openai.com','perplexity.ai','claude.ai','copilot.microsoft.com']))kanal='AI';
+    else if(/(^|\.)google\.[a-z.]+$/.test(refHost)||has(refHost,['bing.com','duckduckgo.com','ecosia.org','yahoo.com']))kanal='sök';
+    else if(has(refHost,['linkedin.com','lnkd.in','facebook.com','instagram.com','t.co','x.com','twitter.com','youtube.com']))kanal='social';
+    else if(has(refHost,NEWS))kanal='nyheter';
+    return {kalla:name,kanal:kanal};
+  }
+  const src=classify();
+  const os=/iPhone|iPad|iPod/.test(ua)?'iOS':/Android/.test(ua)?'Android':/Windows/.test(ua)?'Windows':/Mac OS X/.test(ua)?'macOS':/CrOS/.test(ua)?'ChromeOS':/Linux/.test(ua)?'Linux':'annat';
+  const br=/Edg\//.test(ua)?'Edge':/SamsungBrowser/.test(ua)?'Samsung':/OPR\//.test(ua)?'Opera':/Firefox|FxiOS/.test(ua)?'Firefox':/Chrome|CriOS/.test(ua)?'Chrome':/Safari/.test(ua)?'Safari':'annan';
+  const inApp=/FBAN|FBAV/.test(ua)?'Facebook':/Instagram/.test(ua)?'Instagram':/LinkedInApp/.test(ua)?'LinkedIn':/GSA\//.test(ua)?'Google-appen':(/; wv\)/.test(ua)||(/iPhone|iPad/.test(ua)&&!/Safari/.test(ua)))?'annan app':'';
+  const w=window.innerWidth||0;
+  const enhet=/iPad|Tablet/.test(ua)||(/Android/.test(ua)&&!/Mobile/.test(ua))?'surfplatta':/Mobi|iPhone|Android/.test(ua)?'mobil':'dator';
+  let tz='';try{tz=Intl.DateTimeFormat().resolvedOptions().timeZone||''}catch(e){}
+
+  // Ta bort kampanjparametrar ur adressfältet så att delade länkar inte räknas som kampanj igen.
+  try{
+    let changed=false;['utm_source','utm_medium','utm_campaign','utm_content','utm_term','ref'].forEach(k=>{if(qs.has(k)){changed=true}});
+    if(changed){const u=new URL(location.href);['utm_source','utm_medium','utm_campaign','utm_content','utm_term','ref'].forEach(k=>u.searchParams.delete(k));history.replaceState(history.state,'',u.pathname+(u.search||'')+u.hash)}
+  }catch(e){}
+
+  let tokenP=null;
+  function token(){
+    if(!tokenP)tokenP=fetch(API+'/oauth2/token',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({clientId:CLIENT,grantType:'anonymous'})})
+      .then(r=>r.ok?r.json():Promise.reject(r.status)).then(d=>d.access_token);
+    return tokenP;
+  }
+  function send(data,keep){
+    return token().then(t=>fetch(API+'/wix-data/v2/items',{method:'POST',keepalive:!!keep,headers:{Authorization:t,'Content-Type':'application/json'},body:JSON.stringify({dataCollectionId:COL,dataItem:{data:Object.assign({besokId:id},data)}})})).catch(()=>{});
+  }
+
+  send({
+    typ:'besok',
+    sida:cut(location.pathname+location.hash,120),
+    kalla:cut(src.kalla,80), kanal:cut(src.kanal,40),
+    referensDoman:cut(refHost,120), referensSida:refPath,
+    utmSource:cut(qs.get('utm_source'),80), utmMedium:cut(qs.get('utm_medium'),80), utmCampaign:cut(qs.get('utm_campaign'),120),
+    utmContent:cut(qs.get('utm_content'),120), utmTerm:cut(qs.get('utm_term'),120),
+    enhet:enhet, webblasare:br, os:os, inApp:inApp,
+    sprak:cut(navigator.language,20), tidszon:cut(tz,60),
+    skarm:w<480?'<480':w<768?'480–767':w<1024?'768–1023':w<1440?'1024–1439':'1440+'
+  });
+
+  // Engagemang under besöket.
+  let active=0, last=document.visibilityState==='visible'?Date.now():0, scrollMax=0;
+  const seen=new Set(), clicks=[], forms=[];
+  function tick(){if(last){active+=Date.now()-last;last=document.visibilityState==='visible'?Date.now():0}}
+  addEventListener('scroll',()=>{const h=document.documentElement.scrollHeight-innerHeight;if(h>0)scrollMax=Math.max(scrollMax,Math.min(100,Math.round(scrollY/h*100)))},{passive:true});
+  try{
+    const io=new IntersectionObserver(es=>es.forEach(e=>{if(e.isIntersecting&&e.target.id)seen.add(e.target.id)}),{threshold:0.35});
+    document.querySelectorAll('section[id],[data-page] > [id]').forEach(el=>io.observe(el));
+  }catch(e){}
+  addEventListener('hashchange',()=>{const h=location.hash.slice(1);if(h)seen.add(h)});
+  document.addEventListener('click',e=>{
+    const a=e.target.closest&&e.target.closest('a[href],button');if(!a||clicks.length>=40)return;
+    let label='';
+    if(a.tagName==='A'){const href=a.getAttribute('href')||'';
+      if(href.startsWith('mailto:'))label='mejl';else if(href.startsWith('tel:'))label='telefon';
+      else if(href.startsWith('#'))label=href;
+      else{try{const u=new URL(href,location.href);label=/\.pdf$/i.test(u.pathname)?'pdf:'+u.pathname.split('/').pop():(u.hostname.replace(/^www\./,'')===location.hostname.replace(/^www\./,'')?u.pathname+u.hash:'ut:'+u.hostname)}catch(err){label=href}}}
+    else label='knapp:'+cut((a.textContent||'').trim().replace(/\s+/g,' '),40);
+    clicks.push(cut(label,80));
+  },true);
+  document.addEventListener('sm:skickat',e=>{forms.push(String(e.detail||'formulär'));snap(false)});
+  let sent=0;
+  function snap(keep){
+    tick();
+    const s=Math.round(active/1000);
+    if(s<1&&!forms.length)return;
+    sent++;
+    send({typ:'slut',sekunder:s,scrollMax:scrollMax,sektioner:cut([...seen].join(','),500),klick:cut(clicks.join(' | '),1500),formular:forms.join(',')},keep);
+  }
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden'){snap(true)}else{last=Date.now()}});
+  addEventListener('pagehide',()=>snap(true));
+  setTimeout(()=>{if(document.visibilityState==='visible')snap(false)},30000);
+})();
+</script>
 </body></html>
